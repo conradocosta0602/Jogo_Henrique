@@ -7,7 +7,7 @@
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; background: #0a2413; color: #fff; font-family: "Segoe UI", Arial, sans-serif; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
-  #wrap { position: relative; width: 100%; height: 100%; }
+  #wrap { position: relative; width: 100%; height: 100%; outline: none; }
   #view { position: absolute; inset: 0; }
   #view canvas { display: block; }
   #hud { position: absolute; top: calc(10px + env(safe-area-inset-top, 0px)); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 16px; padding: 6px 16px; background: rgba(0,0,0,.55); border-radius: 12px; font-weight: 700; font-size: clamp(15px, 3vw, 24px); z-index: 5; white-space: nowrap; }
@@ -34,14 +34,15 @@
   #touch.on { display: block; }
   #stick { position: absolute; left: 24px; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); width: 130px; height: 130px; border-radius: 50%; background: rgba(255,255,255,.15); border: 3px solid rgba(255,255,255,.4); pointer-events: auto; }
   #knob { position: absolute; left: 40px; top: 40px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,.6); }
-  #kickBtn, #sprintBtn { position: absolute; border-radius: 50%; pointer-events: auto; display: flex; align-items: center; justify-content: center; font-weight: 800; color: #222; }
+  #kickBtn, #sprintBtn, #passBtn { position: absolute; border-radius: 50%; pointer-events: auto; display: flex; align-items: center; justify-content: center; font-weight: 800; color: #222; }
   #kickBtn { right: 24px; bottom: calc(30px + env(safe-area-inset-bottom, 0px)); width: 100px; height: 100px; background: rgba(255,210,63,.85); font-size: 18px; }
   #sprintBtn { right: 140px; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); width: 70px; height: 70px; background: rgba(255,255,255,.7); font-size: 13px; }
+  #passBtn { right: 40px; bottom: calc(150px + env(safe-area-inset-bottom, 0px)); width: 76px; height: 76px; background: rgba(120,200,255,.85); font-size: 15px; }
   #touch.on ~ #chargeWrap { bottom: 170px; }
 </style>
 </head>
 <body>
-<div id="wrap">
+<div id="wrap" tabindex="-1">
   <div id="view"></div>
   <div id="hud">
     <div class="team"><div class="dot" style="background:#2f7bff"></div><span>VOCÊ</span></div>
@@ -55,6 +56,7 @@
   <div id="touch">
     <div id="stick"><div id="knob"></div></div>
     <div id="sprintBtn">CORRER</div>
+    <div id="passBtn">PASSE</div>
     <div id="kickBtn">CHUTAR</div>
   </div>
   <div id="chargeWrap"><div id="charge"></div></div>
@@ -118,6 +120,7 @@
   let players = [], ball, score = [0, 0], timeLeft = MATCH_TIME;
   let state = 'menu';   // menu | play | goal | pause | end
   let pauseTimer = 0, controlled = null, charge = 0, charging = false;
+  let passTarget = null, passTimer = 0, passWas = false;
   let camMode = 0;      // 0 = TV, 1 = atrás do jogador
 
   function makePlayer(team, role, hx, hy, num) {
@@ -145,7 +148,7 @@
     starter.x = W / 2 + (towardTeam === 0 ? -24 : 24); starter.y = H / 2;
     ball = { x: W / 2, y: H / 2, z: 0, vx: 0, vy: 0, vz: 0, spin: 0 };
     controlled = players[2];
-    charge = 0; charging = false;
+    charge = 0; charging = false; passTimer = 0; passTarget = null;
   }
 
   function newGame() {
@@ -154,6 +157,7 @@
     kickoff(0);
     state = 'play';
     overlay.classList.add('hidden');
+    grabFocus();
     updateHud();
     sfx.whistle();
   }
@@ -171,7 +175,7 @@
 
   // ---------- Entrada ----------
   const keys = {};
-  const touchIn = { x: 0, y: 0, kick: false, sprint: false };
+  const touchIn = { x: 0, y: 0, kick: false, sprint: false, pass: false };
   window.addEventListener('keydown', e => {
     const k = e.key.toLowerCase();
     if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
@@ -181,10 +185,16 @@
     if (k === 'enter' && (state === 'menu' || state === 'end')) newGame();
     if (k === 'c') camMode = 1 - camMode;
   });
+  // garante que o teclado vá para o jogo (ex.: quando aberto dentro de outra página)
+  const wrapEl = document.getElementById('wrap');
+  function grabFocus() { try { window.focus(); wrapEl.focus({ preventScroll: true }); } catch (e) {} }
+  wrapEl.addEventListener('pointerdown', e => { if (!e.target.closest('button')) grabFocus(); });
+  window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
   window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
   document.getElementById('camBtn').addEventListener('click', e => { camMode = 1 - camMode; e.currentTarget.blur(); });
 
   function kickHeld() { return keys[' '] || keys['k'] || keys['j'] || touchIn.kick; }
+  function passHeld() { return keys['x'] || keys['e'] || touchIn.pass; }
   function sprintHeld() { return keys['shift'] || keys['l'] || touchIn.sprint; }
   function inputDir() {
     let x = 0, y = 0;
@@ -223,6 +233,7 @@
   }
   holdBtn(document.getElementById('kickBtn'), 'kick');
   holdBtn(document.getElementById('sprintBtn'), 'sprint');
+  holdBtn(document.getElementById('passBtn'), 'pass');
 
   // ---------- Utilidades ----------
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -242,6 +253,40 @@
   }
 
   function canKick(p) { return p.cd <= 0 && ball.z < 35 && dist(p, ball) < PR + BR + 10; }
+
+  // distância de um ponto a um segmento (para ver se o passe está livre)
+  function segDist(px, py, ax, ay, bx, by) {
+    const vx = bx - ax, vy = by - ay, l2 = vx * vx + vy * vy || 1;
+    const t = clamp(((px - ax) * vx + (py - ay) * vy) / l2, 0, 1);
+    return Math.hypot(px - (ax + vx * t), py - (ay + vy * t));
+  }
+
+  // melhor companheiro para receber: livre, na direção preferida e mais perto do gol
+  function bestMate(p, dx, dy) {
+    let best = null, bestScore = -Infinity;
+    const dm = Math.hypot(dx, dy) || 1;
+    for (const m of players) {
+      if (m === p || m.team !== p.team || m.role === 'gk') continue;
+      const d = dist(p, m);
+      if (d < 50 || d > 520) continue;
+      const blocked = players.some(q => q.team !== p.team && segDist(q.x, q.y, p.x, p.y, m.x, m.y) < 20);
+      if (blocked) continue;
+      const marked = players.filter(q => q.team !== p.team && dist(q, m) < 45).length;
+      const dir = ((m.x - p.x) * dx + (m.y - p.y) * dy) / (d * dm);
+      const gdist = Math.abs(goalX(p.team) - m.x);
+      const score = dir * 120 - gdist * 0.15 - marked * 60 - d * 0.05;
+      if (score > bestScore) { bestScore = score; best = m; }
+    }
+    return best;
+  }
+
+  function passTo(p, m) {
+    const tx = m.x + m.vx * 0.35, ty = m.y + m.vy * 0.35;
+    const d = Math.hypot(tx - p.x, ty - p.y);
+    const lob = players.some(q => q.team !== p.team && segDist(q.x, q.y, p.x, p.y, tx, ty) < 18);
+    kickBall(p, tx - p.x, ty - p.y, clamp(d * 1.5 + 180, 300, 720), lob ? 240 : 0);
+    passTarget = m; passTimer = 1.2;
+  }
 
   // ---------- IA ----------
   function moveToward(p, tx, ty, speed, dt) {
@@ -305,15 +350,14 @@
         if (dGoal < shootRange) {
           kickBall(p, gx - p.x, rand(GOAL_TOP + 12, GOAL_BOT - 12) + rand(-err, err) * 0.5 - p.y, 780, rand(0, 170));
         } else {
-          // pressão adversária? passa para companheiro livre
-          const opp = players.filter(q => q.team !== p.team && dist(q, p) < 55 && (q.x - p.x) * dir > 0);
-          if (opp.length) {
-            const mates = players.filter(q => q.team === p.team && q !== p && q.role !== 'gk' && (q.x - p.x) * dir > -40);
-            if (mates.length) {
-              const m = mates[Math.floor(Math.random() * mates.length)];
-              kickBall(p, m.x + dir * 40 - p.x, m.y - p.y, 520, Math.random() < 0.4 ? 200 : 0);
-            } else kickBall(p, dir, rand(-0.4, 0.4), 600, 220);
-          } else if (behind > 0.6) {
+          // jogo coletivo: sob pressão passa; livre, às vezes toca para quem está mais avançado
+          const pressed = players.some(q => q.team !== p.team && dist(q, p) < 60 && (q.x - p.x) * dir > -10);
+          const mate = bestMate(p, dir, 0);
+          const aheadBy = mate ? (mate.x - p.x) * dir : 0;
+          if (pressed && mate) passTo(p, mate);
+          else if (pressed) kickBall(p, dir, rand(-0.4, 0.4), 600, 220);
+          else if (mate && aheadBy > 60 && Math.random() < 0.35) passTo(p, mate);
+          else if (behind > 0.6) {
             // conduzir: toque curto para frente
             kickBall(p, ux, uy, 260 * spd);
             p.cd = 0.25;
@@ -357,12 +401,18 @@
     // troca automática do jogador controlado (mais perto da bola)
     const mine = players.filter(p => p.team === 0 && p.role !== 'gk');
     const best = mine.reduce((a, b) => dist(a, ball) < dist(b, ball) ? a : b);
-    if (!controlled || (best !== controlled && dist(best, ball) + 30 < dist(controlled, ball) && !charging)) controlled = best;
+    if (!controlled || (best !== controlled && dist(best, ball) + 30 < dist(controlled, ball) && !charging && !(passTimer > 0 && passTarget === controlled))) controlled = best;
 
     // quem persegue a bola em cada time
     const chaser = [0, 1].map(t => players.filter(p => p.team === t && p.role !== 'gk')
       .reduce((a, b) => dist(a, ball) < dist(b, ball) ? a : b));
     chaser[0] = controlled;
+    // quem vai receber o passe corre para a bola
+    if (passTimer > 0) {
+      passTimer -= dt;
+      if (passTarget.team === 1) chaser[1] = passTarget;
+      if (dist(passTarget, ball) < PR + BR + 6) passTimer = 0;
+    }
 
     const cpuSpd = DIFF[diff].speed;
     for (const p of players) {
@@ -392,8 +442,21 @@
   function controlHuman(p, dt) {
     const d = inputDir();
     const speed = sprintHeld() ? 250 : 190;
-    steer(p, d.x * speed, d.y * speed, dt);
-    if (d.x || d.y) { const m = Math.hypot(d.x, d.y); p.fx = d.x / m; p.fy = d.y / m; }
+    if (!d.x && !d.y && passTimer > 0 && passTarget === p) {
+      // recebendo passe sem mexer no controle: vai ao encontro da bola
+      moveToward(p, ball.x, ball.y, 200, dt);
+    } else {
+      steer(p, d.x * speed, d.y * speed, dt);
+      if (d.x || d.y) { const m = Math.hypot(d.x, d.y); p.fx = d.x / m; p.fy = d.y / m; }
+    }
+
+    // passe para o companheiro mais bem colocado na direção da seta
+    const passNow = passHeld();
+    if (passNow && !passWas && canKick(p)) {
+      const m = bestMate(p, p.fx, p.fy) || players.filter(q => q.team === 0 && q !== p && q.role !== 'gk').sort((a, b) => dist(a, p) - dist(b, p))[0];
+      if (m) { passTo(p, m); controlled = m; charging = false; charge = 0; passWas = passNow; return; }
+    }
+    passWas = passNow;
 
     const shoot = () => {
       const lift = charge > 0.5 ? (charge - 0.5) * 2 * 320 : 0;   // chute forte sobe
@@ -493,7 +556,7 @@
       showPanel(`<h1>Pausado</h1><button class="btn" id="resume">Continuar</button><button class="btn alt" id="quit">Menu</button>`);
       document.getElementById('resume').onclick = togglePause;
       document.getElementById('quit').onclick = menu;
-    } else if (state === 'pause') { state = 'play'; overlay.classList.add('hidden'); }
+    } else if (state === 'pause') { state = 'play'; overlay.classList.add('hidden'); grabFocus(); }
   }
 
   // ---------- Menus ----------
@@ -518,7 +581,7 @@
       <p>Você é o time <b style="color:#6fa8ff">AZUL</b>. Faça mais gols que a CPU em 2 minutos!</p>
       <div class="keys">
         <b>Mover:</b> setas ou WASD &nbsp;·&nbsp; <b>Chutar:</b> Espaço (segure para chute forte e alto)<br>
-        <b>Correr:</b> Shift &nbsp;·&nbsp; <b>Câmera:</b> C &nbsp;·&nbsp; <b>Pausar:</b> P ou Esc<br>
+        <b>Passe:</b> X ou E &nbsp;·&nbsp; <b>Correr:</b> Shift &nbsp;·&nbsp; <b>Câmera:</b> C &nbsp;·&nbsp; <b>Pausar:</b> P ou Esc<br>
         No celular: use o joystick e os botões na tela.
       </div>
       ${diffButtons()}
